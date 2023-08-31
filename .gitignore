@@ -43,7 +43,7 @@ models/*
 # dotenv
 .env
 .envrc
-
+node_modules
 # virtualenv
 .venv
 venv/
