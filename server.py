@@ -30,19 +30,24 @@ def read_root():
     return {"Hello": "Welcome to Sonic Meow!"}
 
 
-class Prompt(BaseModel):
-    ip_address: str
-
-
 @app.post("/generate")
 async def generate(request: Request):
     ip = request.client.host
-    if request.host == "":
+    port = request.client.port
+    audio = request.body.audio
+    bpm = request.body.bpm
+    duration = request.body.duration
+    iterations = request.body.iterations
+    output_duration = request.body.output_duration
+    if request.client.host == "":
         raise HTTPException(status_code=400, detail="Prompt cannot be empty")
-    return await waiting_for_file(ip)
+    return await waiting_for_file(
+        ip, port, audio, bpm, duration, iterations, output_duration
+    )
 
 
-async def waiting_for_file(file_path):
+async def waiting_for_file(ip, host, audio, bpm, duration, iterations, output_duration):
+    file_path = generate_audio(audio, bpm, duration, iterations, output_duration)
     while not os.path.exists(file_path):
         await asyncio.sleep(1)
 

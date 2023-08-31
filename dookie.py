@@ -1,39 +1,61 @@
-import torchaudio
 import torch
+import torchaudio
 from torch import tensor
 
-import numpy as np
-import librosa
-from audiocraft.models import MusicGen
-from audiocraft.data.audio import audio_write
-from pydub import AudioSegment
-from typing import Tuple, Literal, Union
-from enum import Enum
 import loguru
 import random
 import os
+import io
+from io import BytesIO
+import json
+import numpy as np
+from audiocraft.models import MusicGen
+from audiocraft.data.audio import audio_write
+from pydub import AudioSegment
+from typing import Union, Optional
 
 logger = loguru.logger
 
 is_cuda_available = torch.cuda.is_available()
-
-
-SONG_PATH = "in/Progressive.wav"
+SONG_PATH = "in/Off_Kilter_[Master]-Bako-48k-32Bit-1db-1.mp3"
+MIN_DUR = 10
+MAX_DUR = 20
 MODEL_PATH = "facebook/musicgen-small"
-OUT_PATH = ""
-TEMP_PATH = ""
-BPM = 75
-ITERATIONS = 4
+BPM = 128
+ITERATIONS = 7
 
 
-def run():
-    def get_song_path():
+def run(
+    audio: BytesIO,
+    bpm: int,
+    iterations: Optional[int] = 4,
+    min_dur: Optional[int] = 15,
+    max_dur: Optional[int] = 25,
+    dur: Optional[int] = None,
+):
+    if min_dur:
+        MIN_DUR = min_dur
+    if max_dur:
+        MAX_DUR = max_dur
+    MODEL_PATH = "facebook/musicgen-small"
+    if bpm:
+        BPM = bpm
+    if iterations:
+        ITERATIONS = iterations
+
+    def get_song_path(bytes_array: BytesIO):
         try:
+            audio_bytes = bytes_array
             for each in os.listdir("in/"):
+                with open(f"in/{each}", "wb") as f:
+                    f.write(audio_bytes.read())
                 return f"in/{each}"
 
         except FileNotFoundError as error:
             raise Exception("Error in get_out_path function") from error
+
+    if audio:
+        SONG_PATH = get_song_path(audio)
 
     def get_temp_path(i):
         try:
@@ -104,8 +126,12 @@ def run():
 
     except Exception as error:
         raise Exception("Error in create_slices function") from error
+    if not MIN_DUR:
+        MIN_DUR = 10
+    if not MAX_DUR:
+        MAX_DUR = 20
 
-    def calculate_duration(bpm_input, min_duration=20, max_duration=30):
+    def calculate_duration(bpm_input, min_duration=MIN_DUR, max_duration=MAX_DUR):
         logger.info("Calculating duration")
         single_bar_duration = 4 * 60 / bpm_input
         bars = max(min_duration // single_bar_duration, 1)
@@ -124,22 +150,23 @@ def run():
     # Main Code
     # Load the song
 
-    SONG_PATH = get_song_path()
+    SONG_PATH = get_song_path(audio)
 
     song, sr = torchaudio.load(SONG_PATH)
 
     # Create slices from the song
     slices = create_slices(song, sr, 35, num_slices=5)
-
+    duration = dur
     # Calculate the optimal duration
-
-    duration = calculate_duration(BPM)
+    if not dur:
+        duration = calculate_duration(BPM)
 
     # Load the model
     model_continue = MusicGen.get_pretrained(MODEL_PATH)
 
     model_continue.set_generation_params(duration=duration)
-
+    if not ITERATIONS:
+        ITERATIONS = 1
     n_iterations = ITERATIONS
     all_audio_files = []
 
@@ -186,11 +213,35 @@ def run():
     return combined_audio.export(OUT_PATH, format="wav")
 
 
-def main() -> Union[str, bool]:
-    return OUT_PATH if (result := run()) else True
+def main(
+    audio,
+    bpm,
+    iterations,
+    min_dur: Optional[int],
+    max_dur: Optional[int],
+    dur: Optional[int],
+) -> Union[str, bool]:
+    run(
+        audio,
+        bpm,
+        iterations,
+        min_dur,
+        max_dur,
+        dur,
+    )
+
+    count = len(os.listdir("static"))
+    return f"static/combined_audio_{count}.wav"
 
 
 print("Audio generation completed.")
 
 if __name__ == "__main__":
-    main()
+    with open("in/Prog haus.mp3", "rb") as f:
+        audio = io.BytesIO(f.read())
+    bpm = 120
+    iterations = 1
+    min_dur = 10
+    max_dur = 20
+    dur = None
+    main(audio, bpm, iterations, min_dur, max_dur, dur)
