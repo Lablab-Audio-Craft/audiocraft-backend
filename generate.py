@@ -1,37 +1,38 @@
 from transformers import AutoProcessor, MusicgenForConditionalGeneration
+import os
+import loguru
 import scipy
 import torch
-import os
 
-cuda = torch.cuda.is_available()
-
-def get_outpath():
-    count = len(os.listdir("./out"))
-    return f"./out/audio_{count}.wav"
+is_cuda = torch.cuda.is_available()
+if is_cuda:
+    device = torch.device("cuda", 0)
 
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+logger = loguru.logger
 
-processor = AutoProcessor.from_pretrained("models/musicgen-medium")
-model = MusicgenForConditionalGeneration.from_pretrained("models/musicgen-medium")
-if cuda == True:
-    model = model.to(device)
 
-inputs = processor(
-    text=["uplifting trance track with driving bass and uplifting synth plucks"],
-    padding=True,
-    return_tensors="pt",
-    if cuda:
-        torch.cuda.return_tensors = True,
-)
-audio_values = model.generate(**inputs, max_new_tokens=256)
+def main(prompt):
+    logger.info("generating audio from prompt")
+    outdir = "static/"
+    length = os.listdir(outdir)
+    outpath = f"{outdir}combined_audio_{len(length)+1}.wav"
+    processor = AutoProcessor.from_pretrained("models/musicgen-medium")
+    model = MusicgenForConditionalGeneration.from_pretrained("models/musicgen-medium")
+    model.to(device)
 
-out_path = get_outpath()
+    inputs = processor(
+        text=[prompt],
+        padding=True,
+        return_tensors="pt",
+    ).to("cuda")
+    audio_values = model.generate(**inputs, max_new_tokens=512)
+    audio_values = audio_values.cpu()
+    sampling_rate = model.config.audio_encoder.sampling_rate
+    scipy.io.wavfile.write(outpath, rate=sampling_rate, data=audio_values[0, 0].numpy())
+    return outpath
 
-sampling_rate = model.config.audio_encoder.sampling_rate
 
-source_tensor = audio_values.cpu()
-
-audio_values = source_tensor.squeeze().numpy()
-
-scipy.io.wavfile.write(out_path, rate=sampling_rate, data=audio_values[0, 0].numpy())
+if __name__ == "__main__":
+    prompt = input("Enter prompt: ")
+    main(prompt)

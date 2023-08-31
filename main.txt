@@ -1,0 +1,51 @@
+import loguru
+import uvicorn
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from generate import main as generate_audio
+from dookie import main as dookie
+
+
+logger = loguru.logger
+
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.get("/")
+def read_root():
+    return {"Hello": "Welcome to Sonic Meow!"}
+
+
+class Prompt(BaseModel):
+    audio: str
+
+
+@app.post("/generate")
+async def generate(request: Request):
+    logger.info("generating audio")
+    try:
+        request = await request.json()
+        prompt = request["audio"]
+        if len(prompt) < 150:
+            response = generate_audio(prompt)
+        elif len(prompt) > 150:
+            response = dookie()
+        else:
+            raise ValueError("Prompt can't be empty")
+        return JSONResponse(content=response)
+    except HTTPException as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+if __name__ == "__main__":
+    uvicorn.run("main:app", host="localhost", port=8001, reload=True)

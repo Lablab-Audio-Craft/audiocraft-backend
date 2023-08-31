@@ -1,81 +1,126 @@
-import os
+from flask import Flask, request, jsonify, send_file
+from flask_cors import CORS
 import io
-from io import BytesIO
-import loguru
-import uvicorn
-import asyncio
-import aiofiles
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.requests import HTTPConnection
-from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import Optional
-from dookie import main as run
+import torchaudio
+import torch
+import numpy as np
+from audiocraft.models import MusicGen
+from audiocraft.data.audio import audio_write
+from pydub import AudioSegment
+import random
 import json
-
-logger = loguru.logger
-
-app = FastAPI()
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+from werkzeug.utils import secure_filename
+import base64
 
 
-class formData(BaseModel):
-    audio: str
-    bpm: int
-    iterations: int
-    min_dur: Optional[int]
-    max_dur: Optional[int]
-    dur: Optional[int]
+app = Flask(__name__)
+CORS(app)
 
 
-@app.get("/")
-def read_root():
-    return "localhost:8000/docs"
 
+@app.route('/generate', methods=['POST'])
+def generate_audio():
+    if request.json is None:
+        return "No JSON received", 400
 
-@app.post("/generate")
-async def generate(request: formData):
-    form_data: formData = request
-    if form_data.audio == "":
-        raise HTTPException(status_code=400, detail="audio cannot be empty")
-    if form_data.bpm == "":
-        raise HTTPException(status_code=400, detail="bpm cannot be empty")
-    if form_data.iterations == "":
-        raise HTTPException(status_code=400, detail="iterations cannot be empty")
-    return await waiting_for_file(form_data=form_data)
+    audio_base64 = request.json.get('audioBase64')
+    if audio_base64 is None:
+        return "No audio received", 400
 
+    print("Received audio:", audio_base64)
 
-async def waiting_for_file(form_data):
-    audio, bpm, iterations, min_dur, max_dur, dur = form_data
-    file_path = run(audio, bpm, iterations, min_dur, max_dur, dur)
-    while not os.path.exists(file_path):
-        await asyncio.sleep(1)
+    # Get form data
+    bpm = int(request.json.get('bpm', 75))
+    prompt_duration = int(request.json.get('duration', 5))
+    n_iterations = int(request.json.get('iterations', 7))
+    output_duration_range = request.json.get('outputDurationRange', '20-30')
+    min_duration, max_duration = map(int, output_duration_range.split('-'))
 
-    count = len(os.listdir("static"))
+    # Get the base64-encoded audio and decode it
+    audio_bytes = base64.b64decode(audio_base64)
+    
+    print(f"Received bpm: {bpm}, prompt_duration: {prompt_duration}, n_iterations: {n_iterations}")
 
-    if count is None:
-        return HTTPException(status_code=500, detail="Error in main function")
+    # Save the uploaded base64-decoded audio data temporarily
+    filename = "temp_audio.wav"
+    filepath = f"./tmp/{filename}"
+    with open(filepath, "wb") as f:
+        f.write(audio_bytes)
 
-    try:
-        async with aiofiles.open(file_path, mode="rb") as f:
-            content = await f.read()
-            byte_array = io.BytesIO(content)
-            return JSONResponse(content=byte_array.getvalue(), status_code=200)
-    except SystemError as error:
-        raise Exception("Error in main function") from error
+    # Load audio into a usable format
+    song, sr = torchaudio.load(filepath)
 
+    def peak_normalize(y, target_peak=0.9):
+        return target_peak * (y / np.max(np.abs(y)))
 
-app.mount("/static", StaticFiles(directory="static"), name="static")
+    def rms_normalize(y, target_rms=0.05):
+        return y * (target_rms / np.sqrt(np.mean(y**2)))
 
+    def preprocess_audio(waveform):
+        waveform_np = waveform.squeeze().numpy()
+        processed_waveform_np = rms_normalize(peak_normalize(waveform_np))
+        return torch.from_numpy(processed_waveform_np).unsqueeze(0)
+    
+    def calculate_duration():
+        single_bar_duration = 4 * 60 / bpm
+        bars = max(min_duration // single_bar_duration, 1)
+        while single_bar_duration * bars < min_duration:
+            bars += 1
+        duration = single_bar_duration * bars
+        while duration > max_duration and bars > 1:
+            bars -= 1
+            duration = single_bar_duration * bars
+        return duration
+    
+    
+    duration = calculate_duration()
 
-if __name__ == "__main__":
-    uvicorn.run("main:app", host="localhost", port=8000, reload=True)
+    def create_slices(song, sr, slice_duration, num_slices=5):
+        song_length = song.shape[-1] / sr
+        slices = []
+        for i in range(num_slices):
+            random_start = random.choice(range(0, int((song_length - slice_duration) * sr), int(4 * 60 / bpm * sr)))
+            slice_waveform = song[..., random_start:random_start + int(slice_duration * sr)]
+            if len(slice_waveform.squeeze()) < int(slice_duration * sr):
+                additional_samples_needed = int(slice_duration * sr) - len(slice_waveform.squeeze())
+                slice_waveform = torch.cat([slice_waveform, song[..., :additional_samples_needed]], dim=-1)
+            slices.append(slice_waveform)
+        return slices
+    
+    slices = create_slices(song, sr, duration, num_slices=5)
+
+    model_continue = MusicGen.get_pretrained('facebook/musicgen-small')
+    model_continue.set_generation_params(duration=duration)
+
+    all_audio_files = []
+
+    for i in range(n_iterations):
+        slice_idx = i % len(slices)
+        prompt_waveform = slices[slice_idx][..., :int(prompt_duration * sr)]
+        prompt_waveform = preprocess_audio(prompt_waveform)
+        output = model_continue.generate_continuation(prompt_waveform, prompt_sample_rate=sr, progress=True)
+
+        if len(output.size()) > 2:
+            output = output.squeeze()
+        
+        filename = f'continue_{i}.wav'
+        audio_write(filename, output.cpu(), model_continue.sample_rate, strategy="loudness", loudness_compressor=True)
+        all_audio_files.append(filename)
+
+        combined_audio = AudioSegment.empty()
+        for filename in all_audio_files:
+            combined_audio += AudioSegment.from_wav(filename)
+
+    audio_stream = io.BytesIO()
+    combined_audio.export(audio_stream, format='wav')
+    audio_stream.seek(0)
+    
+    return send_file(
+        audio_stream,
+        as_attachment=True,
+        download_name='combined_audio.wav',
+        mimetype='audio/wav'
+    )
+
+if __name__ == '__main__':
+    app.run(port=5000)

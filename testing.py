@@ -1,32 +1,29 @@
 import base64
 import requests
 import loguru
-import json
-import io
+import os
 
 logger = loguru.logger
 
 
 def main():
-    with open("in/Off_Kilter_[Master]-Bako-48k-32Bit-1db-1.mp3", "rb") as f:
+    # Read the file and base64 encode it
+    audio = f"static/{os.listdir('static/')[0]}"
+    with open(audio, "rb") as f:
         file_content = base64.b64encode(f.read()).decode("utf-8")
 
-    data = {
-        "bpm": 0,
-        "iterations": 0,
-        "min_dur": 0,
-        "max_dur": 0,
-        "dur": 0,
-    }
+    # Other form data
+    detail = {"audio": file_content}
 
-    payload = {**data, "audio": file_content}
+    # Endpoint URL
+    url = "http://localhost:8001/generate"
 
-    url = "http://localhost:8000/generate"
+    # Make the request
+    response = requests.post(url, data=detail, timeout=6000)
 
-    response = requests.post(url, data=payload)
-
+    # Log and print the response
     logger.info(response.status_code)
-    print(response.json())
+    print(response)
 
 
 if __name__ == "__main__":
