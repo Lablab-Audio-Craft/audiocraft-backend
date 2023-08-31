@@ -209,8 +209,8 @@ def run(
     for filename in all_audio_files:
         combined_audio += AudioSegment.from_wav(f"{filename}.wav")
         os.remove(f"{filename}.wav")
-
-    return combined_audio.export(OUT_PATH, format="wav")
+        combined_audio.export(OUT_PATH, format="wav")
+    return OUT_PATH
 
 
 def main(

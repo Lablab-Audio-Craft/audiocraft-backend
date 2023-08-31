@@ -1,16 +1,19 @@
 import os
 import io
+from io import BytesIO
 import loguru
 import uvicorn
 import asyncio
 import aiofiles
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.requests import HTTPConnection
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from dookie import main as generate_audio
-
+from typing import Optional
+from dookie import main as run
+import json
 
 logger = loguru.logger
 
@@ -25,29 +28,35 @@ app.add_middleware(
 )
 
 
+class formData(BaseModel):
+    audio: str
+    bpm: int
+    iterations: int
+    min_dur: Optional[int]
+    max_dur: Optional[int]
+    dur: Optional[int]
+
+
 @app.get("/")
 def read_root():
-    return {"Hello": "Welcome to Sonic Meow!"}
+    return "localhost:8000/docs"
 
 
 @app.post("/generate")
-async def generate(request: Request):
-    ip = request.client.host
-    port = request.client.port
-    audio = request.body.audio
-    bpm = request.body.bpm
-    duration = request.body.duration
-    iterations = request.body.iterations
-    output_duration = request.body.output_duration
-    if request.client.host == "":
-        raise HTTPException(status_code=400, detail="Prompt cannot be empty")
-    return await waiting_for_file(
-        ip, port, audio, bpm, duration, iterations, output_duration
-    )
+async def generate(request: formData):
+    form_data: formData = request
+    if form_data.audio == "":
+        raise HTTPException(status_code=400, detail="audio cannot be empty")
+    if form_data.bpm == "":
+        raise HTTPException(status_code=400, detail="bpm cannot be empty")
+    if form_data.iterations == "":
+        raise HTTPException(status_code=400, detail="iterations cannot be empty")
+    return await waiting_for_file(form_data=form_data)
 
 
-async def waiting_for_file(ip, host, audio, bpm, duration, iterations, output_duration):
-    file_path = generate_audio(audio, bpm, duration, iterations, output_duration)
+async def waiting_for_file(form_data):
+    audio, bpm, iterations, min_dur, max_dur, dur = form_data
+    file_path = run(audio, bpm, iterations, min_dur, max_dur, dur)
     while not os.path.exists(file_path):
         await asyncio.sleep(1)
 
@@ -69,4 +78,4 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="localhost", port=8000)
+    uvicorn.run("main:app", host="localhost", port=8000, reload=True)
